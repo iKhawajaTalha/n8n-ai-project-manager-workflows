@@ -1,0 +1,176 @@
+{
+  "name": "daily remarks workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1BTRP2n4SMkYxO0Lncn6NKHJuYflkWiYYb7lEy55kQ8E",
+          "mode": "list",
+          "cachedResultName": "followUP",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1BTRP2n4SMkYxO0Lncn6NKHJuYflkWiYYb7lEy55kQ8E/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1BTRP2n4SMkYxO0Lncn6NKHJuYflkWiYYb7lEy55kQ8E/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "date",
+              "lookupValue": "={{ new Date().toISOString().split('T')[0] }}"
+            },
+            {
+              "lookupColumn": "contextType",
+              "lookupValue": "active"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "name": "Get Today's Active Tasks",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -208,
+        -16
+      ],
+      "id": "73bf715c-c8ee-4b55-89ed-cc05cf4e451e",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "BeKgXcNU2txg6pFT",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\n\n// Handle both cases (data array OR direct rows)\nlet rows = [];\n\nif (items[0].json.data) {\n  rows = items[0].json.data;\n} else {\n  rows = items.map(item => item.json);\n}\n\nconst today = new Date().toISOString().split('T')[0];\n\nconst toRemind = rows.filter(r => \n  r.date === today &&\n  r.contextType === 'active' &&\n  r.reminderSent !== true &&\n  r.reminderSent !== 'true'\n);\n\nif (toRemind.length === 0) {\n  return [{ json: { noTasks: true, message: 'No pending reminders for today' }}];\n}\n\nreturn toRemind.map(row => ({\n  json: {\n    slackUserId: row.slackUserId || '',\n    userName: row.userName || '',\n    originalText: row.originalText || '',   // ✅ Yeh line add ki\n    taskDescription: row.taskDescription || '',\n    date: row.date || ''\n  }\n}));"
+      },
+      "name": "Prepare Reminders",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        0,
+        -16
+      ],
+      "id": "690dbd3a-a0de-4c4f-839c-41f5f2bc218d"
+    },
+    {
+      "parameters": {
+        "select": "user",
+        "user": {
+          "__rl": true,
+          "value": "={{ $json.slackUserId }}",
+          "mode": "id"
+        },
+        "text": "=Assalam-o-Alaikum *{{ $json.userName }}! \n\nToday task :\n{{ $json.originalText }}\n\nHave you completed this task?",
+        "otherOptions": {
+          "includeLinkToWorkflow": false
+        }
+      },
+      "name": "Send Reminder DM",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        208,
+        -16
+      ],
+      "id": "07068b98-d762-4ca8-af9f-26cf099da497",
+      "webhookId": "386e2dcc-3872-4ec8-a1fc-bd4dff6bcb55",
+      "credentials": {
+        "slackApi": {
+          "id": "7nErFLXOh2FnNRen",
+          "name": "Slack account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Node: \"Store Reminder Info\"\n// Position: After \"Send Reminder DM\"\n\nconst staticData = $getWorkflowStaticData('global');\nif (!staticData.pendingReminders) staticData.pendingReminders = {};\n\nconst reminderData = $input.first().json;\n\n// Google Sheets se row number lena hoga - iske liye pehle sheet query karni hogi\n// Ya phir aap row number \"Prepare Reminders\" node mein pass kar sakte ho\n\nconst today = new Date().toISOString().split('T')[0];\n\nif (!staticData.pendingReminders[today]) {\n  staticData.pendingReminders[today] = [];\n}\n\n// Slack response se thread_ts nikalo (yeh critical hai!)\n// Slack node ka output mein ts hota hai\nconst slackResponse = $input.first().json;\nconst threadTs = slackResponse.ts || '';\n\nstaticData.pendingReminders[today].push({\n  userId: reminderData.userId,\n  userName: reminderData.userName,\n  taskDescription: reminderData.taskDescription,\n  sheetRowIndex: reminderData.sheetRowIndex,\n  reminderThreadTs: threadTs,  // ← Yeh reply match karne ke liye\n  reminderSent: true,\n  status: 'pending'\n});\n\nreturn [{ json: { stored: true, threadTs: threadTs } }];"
+      },
+      "name": "Save Reminder Info",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        416,
+        -16
+      ],
+      "id": "d0a7f207-8349-433f-aba8-943514f1c33d"
+    },
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "triggerAtHour": 10,
+              "triggerAtMinute": 30
+            }
+          ]
+        }
+      },
+      "id": "3a4e4c85-c1d7-4710-a2be-1ac3f47c3e2f",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        -480,
+        -16
+      ]
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Get Today's Active Tasks": {
+      "main": [
+        [
+          {
+            "node": "Prepare Reminders",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Reminders": {
+      "main": [
+        []
+      ]
+    },
+    "Send Reminder DM": {
+      "main": [
+        [
+          {
+            "node": "Save Reminder Info",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Schedule Trigger": {
+      "main": [
+        [
+          {
+            "node": "Get Today's Active Tasks",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "f13026f4-3826-4538-8ca2-e389ebad3968",
+  "meta": {
+    "instanceId": "e8f834c39690ddaac950e5382b5315874e7bc934526e086267afcb85587bc718"
+  },
+  "id": "dE920KcHqGeBAhoq",
+  "tags": []
+}
