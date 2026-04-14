@@ -1,0 +1,355 @@
+{
+  "name": "PM Report Agent — Slack + OpenProject",
+  "nodes": [
+    {
+      "parameters": {
+        "trigger": "={{ [] }}",
+        "channelId": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        },
+        "options": {}
+      },
+      "id": "31f9657e-4cc3-491d-b4b7-c5fbad07fa40",
+      "name": "Slack Trigger",
+      "type": "n8n-nodes-base.slackTrigger",
+      "typeVersion": 1,
+      "position": [
+        -1440,
+        -176
+      ],
+      "webhookId": "pm-slack-trigger-001",
+      "credentials": {
+        "slackApi": {
+          "id": "7nErFLXOh2FnNRen",
+          "name": "Slack account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─── Intent Node ───────────────────────────────────────────────────────────\n// Classifies incoming Slack messages and extracts structured intent.\n// Only passes reporting-related messages downstream.\n// Non-reporting messages are flagged and halted.\n\nconst event = $input.first().json;\n\n// Extract message text from various Slack event structures\nconst text = (\n  event?.event?.text ||\n  event?.text ||\n  event?.message?.text ||\n  ''\n).trim().toLowerCase();\n\nconst rawText = (\n  event?.event?.text ||\n  event?.text ||\n  event?.message?.text ||\n  ''\n).trim();\n\nconst channelId = event?.event?.channel || event?.channel || '';\nconst userId    = event?.event?.user    || event?.user    || '';\nconst ts        = event?.event?.ts      || event?.ts      || '';\n\n// ── 1. Detect bot messages (avoid loops) ──────────────────────────────────\nconst isBotMessage = event?.event?.bot_id || event?.bot_id;\nif (isBotMessage) {\n  return [{ json: { pass: false, reason: 'bot_message', channelId, ts } }];\n}\n\n// ── 2. Intent classification keywords ─────────────────────────────────────\nconst reportKeywords    = ['report', 'summary', 'stats', 'statistics', 'status', 'overview', 'breakdown'];\nconst projectKeywords   = ['project', 'task', 'tasks', 'work package', 'sprint', 'milestone'];\nconst userKeywords      = ['user', 'person', 'individual', 'who', 'performance', 'team member', 'assigned'];\nconst dateKeywords      = ['today', 'yesterday', 'week', 'month', 'days', 'last', 'past', 'since', 'from', 'to', 'between'];\n\nconst hasReport  = reportKeywords.some(k  => text.includes(k));\nconst hasProject = projectKeywords.some(k => text.includes(k));\nconst hasUser    = userKeywords.some(k    => text.includes(k));\n\nconst isReportingRequest = hasReport || (hasProject && !hasUser) || (hasProject && hasUser);\n\nif (!isReportingRequest) {\n  return [{ json: {\n    pass: false,\n    reason: 'not_reporting_intent',\n    channelId,\n    userId,\n    ts,\n    originalText: rawText\n  }}];\n}\n\n// ── 3. Classify report type ────────────────────────────────────────────────\nlet reportType = 'project';\nif (hasProject && hasUser)  reportType = 'both';\nelse if (hasUser && !hasProject) reportType = 'individual';\nelse if (hasProject)             reportType = 'project';\n\n// ── 4. Extract date range ──────────────────────────────────────────────────\nlet daysBack = 7; // default\nlet dateRangeLabel = 'Last 7 days';\n\nconst todayMatch     = text.match(/\\btoday\\b/);\nconst yesterdayMatch = text.match(/\\byesterday\\b/);\nconst lastNDaysMatch = text.match(/(last|past)\\s+(\\d+)\\s+day/);\nconst lastWeekMatch  = text.match(/last\\s+week/);\nconst lastMonthMatch = text.match(/last\\s+month/);\nconst nDaysMatch     = text.match(/(\\d+)\\s+day/);\n\nif (todayMatch) {\n  daysBack = 1; dateRangeLabel = 'Today';\n} else if (yesterdayMatch) {\n  daysBack = 2; dateRangeLabel = 'Yesterday';\n} else if (lastNDaysMatch) {\n  daysBack = parseInt(lastNDaysMatch[2]); dateRangeLabel = `Last ${daysBack} days`;\n} else if (nDaysMatch) {\n  daysBack = parseInt(nDaysMatch[1]); dateRangeLabel = `Last ${daysBack} days`;\n} else if (lastWeekMatch) {\n  daysBack = 7; dateRangeLabel = 'Last 7 days';\n} else if (lastMonthMatch) {\n  daysBack = 30; dateRangeLabel = 'Last 30 days';\n}\n\n// ── 5. Extract project name hint ──────────────────────────────────────────\n// Look for quoted project names: report for \"ProjectX\" or 'ProjectX'\nconst quotedName = rawText.match(/[\"']([^\"']+)[\"']/);\nconst projectHint = quotedName ? quotedName[1] : null;\n\n// ── 6. Build structured output ─────────────────────────────────────────────\nreturn [{ json: {\n  pass: true,\n  reportType,\n  daysBack,\n  dateRangeLabel,\n  projectHint,\n  channelId,\n  userId,\n  ts,\n  originalText: rawText,\n  prompt: `${rawText}\\n\\n[Intent: ${reportType} report | Date range: ${dateRangeLabel} | Days back: ${daysBack}${projectHint ? ` | Project hint: ${projectHint}` : ''}]`\n}}];\n"
+      },
+      "id": "45ead9dd-858a-452c-84aa-33edbd11acb1",
+      "name": "Intent Node",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1200,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": false,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond-pass",
+              "leftValue": "={{ $json.pass }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "499f9219-b932-4d51-b7f0-d9f1ec3dc977",
+      "name": "Is Reporting Request?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -976,
+        -176
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $json.channelId }}",
+          "mode": "id"
+        },
+        "text": "⚠️ I only handle project reporting requests. Try asking for a project report or user performance summary.",
+        "otherOptions": {}
+      },
+      "id": "2d84b698-cbb1-4461-b45c-92dca69f5178",
+      "name": "Ignore Non-Reporting",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        -1184,
+        64
+      ],
+      "webhookId": "4c61f0e8-47c7-4bfb-9769-21f71efbbb28",
+      "credentials": {
+        "slackApi": {
+          "id": "7nErFLXOh2FnNRen",
+          "name": "Slack account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "agent": "conversationalAgent",
+        "promptType": "define",
+        "text": "={{ $json.prompt }}",
+        "options": {
+          "systemMessage": "You are a PM Report Agent inside an n8n workflow.\n\n## System Context\n- Messages originate from Slack bot: \"PM Automation\"\n- Messages are pre-processed by an Intent Node\n- You receive only reporting-related requests\n- Your response will be sent back to the same Slack bot\n\n## Your Role\nAnalyze the incoming request, fetch relevant project/task data from OpenProject, and generate structured reports.\n\n## Data Source\nUse OpenProject data:\n- Project name or ID\n- Work packages (tasks)\n- Task status (Done, In Progress, Testing, etc.)\n- Assigned users\n- Completion dates\n\n## Responsibilities\n\n### 1. Understand Request\n- The message includes a bracketed [Intent: ...] annotation added by the Intent Node — use it to understand report type and date range.\n- Extract: Project name/ID, date range, user name if any.\n\n### 2. Workflow (ALWAYS follow this order)\n1. Call get_projects to list all projects and find the numeric project ID.\n2. Call get_work_packages with the project ID and days_back value from the intent annotation.\n3. Call calculate_report with the returned data.\n\n### 3. Perform Analysis\n#### Project Report:\n- Total number of tasks\n- Tasks completed, in progress, in testing\n- Completion %, In Progress %, Testing %\n\n#### Individual Report:\n- Filter tasks by assigned user\n- Count total, completed, in progress, testing\n- Calculate completion %\n\n### 4. Output Format (STRICT)\nReturn output in clean tabular format only.\n\n#### Project Report:\n| Metric                | Value |\n|----------------------|-------|\n| Project Name         |       |\n| Date Range           |       |\n| Total Tasks          |       |\n| Completed Tasks      |       |\n| In Progress Tasks    |       |\n| Testing Tasks        |       |\n| Completion %         |       |\n| In Progress %        |       |\n| Testing %            |       |\n\n#### Individual Report:\n| User       | Total Tasks | Completed | In Progress | Testing | Completion % |\n|------------|------------|-----------|-------------|---------|------------|\n\n### 5. Rules\n- NO explanations, NO extra text — ONLY tables\n- Round percentages to 2 decimal places\n- If project not found → return exactly: \"Project not found\"\n- If no data → return table with zeros\n- Output must be clean, machine-readable, and Slack-friendly (use code blocks for tables)"
+        }
+      },
+      "id": "f9c28467-dc69-41e2-89cb-96c024e0d804",
+      "name": "PM Report Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        -624,
+        -192
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o-mini",
+        "options": {}
+      },
+      "id": "2dd8e7b1-d6ce-43b1-b64c-e72e528d0e48",
+      "name": "OpenAI Chat Model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.2,
+      "position": [
+        -784,
+        64
+      ],
+      "credentials": {
+        "openAiApi": {
+          "id": "RHkNFFdyNpecp7PB",
+          "name": "OpenAi account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "={{ $('Slack Trigger').item.json?.event?.user || $('Slack Trigger').item.json?.user || 'default' }}",
+        "contextWindowLength": 8
+      },
+      "id": "1f815ee3-fa6b-4e11-9e66-cf6a3eec3e85",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.3,
+      "position": [
+        -624,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "name": "get_projects",
+        "description": "Fetches all projects from OpenProject. Always call this FIRST to find the numeric project ID for the user's requested project. Returns id, name, and identifier for each project.",
+        "jsCode": "const BASE_URL = 'REPLACE_WITH_YOUR_OPENPROJECT_URL';\nconst API_KEY  = 'REPLACE_WITH_YOUR_OPENPROJECT_API_KEY';\n\ntry {\n  const res = await fetch(`${BASE_URL}/api/v3/projects?pageSize=100`, {\n    headers: {\n      'Authorization': 'Basic ' + btoa(`apikey:${API_KEY}`),\n      'Content-Type': 'application/json'\n    }\n  });\n\n  if (!res.ok) return JSON.stringify({ error: `HTTP ${res.status} ${res.statusText}` });\n\n  const data = await res.json();\n  const projects = (data._embedded?.elements || []).map(p => ({\n    id: p.id,\n    name: p.name,\n    identifier: p.identifier,\n    status: p.active ? 'active' : 'inactive'\n  }));\n\n  return JSON.stringify({ count: projects.length, projects });\n} catch (err) {\n  return JSON.stringify({ error: err.message });\n}"
+      },
+      "id": "753ea7bd-c0ff-4c79-9eea-d1b98feff7c1",
+      "name": "get_projects",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.1,
+      "position": [
+        -432,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "name": "get_work_packages",
+        "description": "Fetches work packages (tasks) for a project. Parameters: project_id (numeric ID from get_projects — REQUIRED), days_back (integer, default 7; use 0 for all-time). Returns tasks with status and assignee.",
+        "jsCode": "const BASE_URL  = 'REPLACE_WITH_YOUR_OPENPROJECT_URL';\nconst API_KEY   = 'REPLACE_WITH_YOUR_OPENPROJECT_API_KEY';\n\nconst projectId = $fromAI('project_id', 'Numeric project ID from get_projects', '');\nconst daysBack  = parseInt($fromAI('days_back', 'Number of days to look back. 0 = all time.', '7'), 10);\n\nif (!projectId) return JSON.stringify({ error: 'project_id is required' });\n\ntry {\n  // Build filters\n  const filters = [];\n  if (daysBack > 0) {\n    filters.push({ updatedAt: { operator: '><t-', values: [String(daysBack)] } });\n  }\n\n  const params = new URLSearchParams({\n    pageSize: '500',\n    filters: JSON.stringify(filters)\n  });\n\n  const res = await fetch(\n    `${BASE_URL}/api/v3/projects/${projectId}/work_packages?${params.toString()}`,\n    {\n      headers: {\n        'Authorization': 'Basic ' + btoa(`apikey:${API_KEY}`),\n        'Content-Type': 'application/json'\n      }\n    }\n  );\n\n  if (!res.ok) return JSON.stringify({ error: `HTTP ${res.status} ${res.statusText}` });\n\n  const data = await res.json();\n  const packages = (data._embedded?.elements || []).map(wp => ({\n    id: wp.id,\n    subject: wp.subject,\n    status: wp._links?.status?.title || 'Unknown',\n    assignee: wp._links?.assignee?.title || 'Unassigned',\n    createdAt: wp.createdAt,\n    updatedAt: wp.updatedAt,\n    dueDate: wp.dueDate || null\n  }));\n\n  return JSON.stringify({ total: packages.length, workPackages: packages });\n} catch (err) {\n  return JSON.stringify({ error: err.message });\n}"
+      },
+      "id": "47823db6-b57a-49b7-bd34-50549fb61685",
+      "name": "get_work_packages",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.1,
+      "position": [
+        -224,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "name": "calculate_report",
+        "description": "Calculates and formats the final report from work package data. Parameters: work_packages_json (JSON string from get_work_packages), project_name (string), date_range (e.g. 'Last 7 days'), report_type ('project' | 'individual' | 'both'). Returns Slack-ready markdown tables.",
+        "jsCode": "const raw         = $fromAI('work_packages_json', 'Full JSON string returned by get_work_packages');\nconst projectName = $fromAI('project_name', 'Project name', 'Unknown Project');\nconst dateRange   = $fromAI('date_range', 'Human-readable date range', 'Last 7 days');\nconst reportType  = $fromAI('report_type', 'project | individual | both', 'both');\n\n// ── Parse ──────────────────────────────────────────────────────────────────\nlet packages = [];\ntry {\n  const parsed = typeof raw === 'string' ? JSON.parse(raw) : raw;\n  packages = parsed.workPackages || parsed._embedded?.elements || [];\n  if (!Array.isArray(packages)) packages = [];\n} catch(e) {\n  return `Error parsing work packages: ${e.message}`;\n}\n\n// ── Normalize status ───────────────────────────────────────────────────────\nconst normalize = s => {\n  if (!s) return 'Other';\n  const v = s.toLowerCase();\n  if (/done|closed|finish|complet/.test(v))     return 'Done';\n  if (/progress|active|start|open|new/.test(v)) return 'In Progress';\n  if (/test|review|qa|staging/.test(v))         return 'Testing';\n  return 'Other';\n};\n\n// ── Aggregate ──────────────────────────────────────────────────────────────\nconst total = packages.length;\nlet done = 0, inProg = 0, testing = 0;\nconst userMap = {};\n\nfor (const wp of packages) {\n  const st  = normalize(wp.status);\n  const usr = wp.assignee || 'Unassigned';\n\n  if (st === 'Done')        done++;\n  else if (st === 'In Progress') inProg++;\n  else if (st === 'Testing')     testing++;\n\n  if (!userMap[usr]) userMap[usr] = { total:0, done:0, inProg:0, testing:0 };\n  userMap[usr].total++;\n  if (st === 'Done')        userMap[usr].done++;\n  else if (st === 'In Progress') userMap[usr].inProg++;\n  else if (st === 'Testing')     userMap[usr].testing++;\n}\n\nconst pct = (n, t) => t === 0 ? '0.00%' : ((n/t)*100).toFixed(2)+'%';\n\n// ── Build tables ───────────────────────────────────────────────────────────\nconst outputs = [];\n\nif (reportType === 'project' || reportType === 'both') {\n  const rows = [\n    ['Project Name',      projectName],\n    ['Date Range',        dateRange],\n    ['Total Tasks',       total],\n    ['Completed Tasks',   done],\n    ['In Progress Tasks', inProg],\n    ['Testing Tasks',     testing],\n    ['Completion %',      pct(done,  total)],\n    ['In Progress %',     pct(inProg, total)],\n    ['Testing %',         pct(testing, total)]\n  ];\n  const tbl = [\n    '| Metric                | Value         |',\n    '|----------------------|---------------|',\n    ...rows.map(([m,v]) => `| ${m.padEnd(20)} | ${String(v).padEnd(13)} |`)\n  ].join('\\n');\n  outputs.push('*Project Report*\\n```\\n' + tbl + '\\n```');\n}\n\nif (reportType === 'individual' || reportType === 'both') {\n  const header = '| User                 | Total | Done  | In Prog | Testing | Done % |';\n  const sep    = '|----------------------|-------|-------|---------|---------|--------|';\n  const rows   = Object.entries(userMap).map(([u, d]) =>\n    `| ${u.substring(0,20).padEnd(20)} | ${String(d.total).padEnd(5)} | ${String(d.done).padEnd(5)} | ${String(d.inProg).padEnd(7)} | ${String(d.testing).padEnd(7)} | ${pct(d.done,d.total).padEnd(6)} |`\n  );\n  const tbl = [header, sep, ...rows].join('\\n');\n  outputs.push('*Individual Performance Report*\\n```\\n' + tbl + '\\n```');\n}\n\nreturn outputs.join('\\n\\n') || '_(No data)_';"
+      },
+      "id": "9b0a7827-8145-47fe-8eeb-e8bffdb2fcd4",
+      "name": "calculate_report",
+      "type": "@n8n/n8n-nodes-langchain.toolCode",
+      "typeVersion": 1.1,
+      "position": [
+        -32,
+        64
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "={{ $('Intent Node').item.json.channelId }}",
+          "mode": "id"
+        },
+        "text": "={{ $json.output }}",
+        "otherOptions": {}
+      },
+      "id": "df050617-7390-4ec4-9362-20abe4f26593",
+      "name": "Send Report to Slack",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.3,
+      "position": [
+        -160,
+        -192
+      ],
+      "webhookId": "9e77abf6-ce5b-482e-aba0-e4d0e2fd0ed3",
+      "credentials": {
+        "slackApi": {
+          "id": "7nErFLXOh2FnNRen",
+          "name": "Slack account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Slack Trigger": {
+      "main": [
+        [
+          {
+            "node": "Intent Node",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Intent Node": {
+      "main": [
+        [
+          {
+            "node": "Is Reporting Request?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Reporting Request?": {
+      "main": [
+        [
+          {
+            "node": "PM Report Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Ignore Non-Reporting",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "PM Report Agent": {
+      "main": [
+        [
+          {
+            "node": "Send Report to Slack",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "OpenAI Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "PM Report Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "PM Report Agent",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_projects": {
+      "ai_tool": [
+        [
+          {
+            "node": "PM Report Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "get_work_packages": {
+      "ai_tool": [
+        [
+          {
+            "node": "PM Report Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "calculate_report": {
+      "ai_tool": [
+        [
+          {
+            "node": "PM Report Agent",
+            "type": "ai_tool",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "206c9a79-46cd-4017-9846-b2fea09806e7",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "e8f834c39690ddaac950e5382b5315874e7bc934526e086267afcb85587bc718"
+  },
+  "id": "3ySnvITrR5ImsKJj",
+  "tags": [
+    {
+      "updatedAt": "2026-03-30T19:51:50.275Z",
+      "createdAt": "2026-03-30T19:51:50.275Z",
+      "id": "09CczGKcbGN2Evc4",
+      "name": "PM Slack Reporting"
+    }
+  ]
+}
